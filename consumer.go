@@ -32,7 +32,7 @@ func (w *consumerWorker) Handle(deliveries <-chan wabbit.Delivery, handler Consu
 		d.Ack(false)
 	}
 
-	w.logger.Info("Consumers worker: %s is stopped!", w.Tag)
+	w.logger.Infof("Consumers worker: %s is stopped!", w.Tag)
 	w.Done <- struct{}{}
 }
 
@@ -51,6 +51,7 @@ func (c consumers) GetConsumer(name string) (consumer *consumer, ok bool) {
 type consumer struct {
 	options
 	consumerWorkers
+	channel      wabbit.Channel
 	Name         string
 	WorkersCount int
 	QueueName    string
@@ -59,10 +60,32 @@ type consumer struct {
 	logger       logrus.FieldLogger
 }
 
-func (c *consumer) runWorker(channel wabbit.Channel, worker *consumerWorker) (err error) {
+func (c *consumer) CreateWorkers() {
+	for i := 1; i <= c.WorkersCount; i++ {
+		worker := &consumerWorker{
+			Tag:  fmt.Sprintf("%s_%d", c.Name, i),
+			Done: make(chan struct{}, 1),
+		}
+		worker.logger = c.logger.WithField("logger", "consumer."+worker.Tag)
+
+		c.AddWorker(worker)
+	}
+}
+
+func (c *consumer) RunWorkers() (err error) {
+	for _, worker := range c.consumerWorkers {
+		if err = c.runWorker(worker); err != nil {
+			return
+		}
+	}
+
+	return
+}
+
+func (c *consumer) runWorker(worker *consumerWorker) (err error) {
 	worker.logger.Debug("Running consumer worker!")
 
-	deliveries, err := channel.Consume(
+	deliveries, err := c.channel.Consume(
 		c.QueueName,
 		worker.Tag,
 		c.Options(),

@@ -24,7 +24,7 @@ func consumerHandler(data []byte) error {
 }
 
 func runMQ(config *viper.Viper) {
-	rabbit, err := gogorabbit.New(config.GetString("dsn"))
+	rabbit, err := gogorabbit.New(config)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -49,8 +49,7 @@ func main() {
 
 	viper.Set("mq", map[string]interface{}{
 		"dsn":                dsn,
-		"reconnection_tries": 5,
-		"reconnection_delay": 5, // Seconds
+		"reconnection_delay": 2, // Seconds
 		"exchangers": map[string]interface{}{
 			"test_exchange": map[string]interface{}{
 				"name": "test-exchange",

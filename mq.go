@@ -2,6 +2,8 @@ package gogorabbit
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/NeowayLabs/wabbit"
 	"github.com/NeowayLabs/wabbit/amqp"
@@ -14,30 +16,29 @@ type ConsumerHandler func([]byte) error
 type DoneChannel chan struct{}
 
 type RabbitMQ struct {
+	sync.Mutex
 	exchanges
-	connection wabbit.Conn
-	channel    wabbit.Channel
-	logger     logrus.FieldLogger
+	dsn          string
+	reconDelay   time.Duration // Seconds
+	connection   wabbit.Conn
+	channel      wabbit.Channel
+	logger       logrus.FieldLogger
 }
 
-func New(dsn string) (*RabbitMQ, error) {
+func New(config *viper.Viper) (*RabbitMQ, error) {
 	var err error
 
 	rabbit := &RabbitMQ{
-		exchanges: make(exchanges),
-		logger:    logrus.WithField("logger", "gogorabbit"),
+		dsn:        config.GetString("dsn"),
+		reconDelay: config.GetDuration("reconnection_delay") * time.Second,
+		exchanges:  make(exchanges),
+		logger:     logrus.WithField("logger", "gogorabbit"),
 	}
 
-	rabbit.logger.Debug("Start dialing connection to RabbitMQ!")
-	rabbit.connection, err = amqp.Dial(dsn)
+	err = rabbit.connect()
 	if err != nil {
 		return nil, fmt.Errorf("Error dialing RabbitMQ connection: %s", err)
 	}
-
-	go func() {
-		// TODO: Handle the situation when the connection is closed. Reconnection?
-		rabbit.logger.Warnf("Ooops! RabbitMQ connection is closed: %s", <-rabbit.connection.NotifyClose(make(chan wabbit.Error)))
-	}()
 
 	rabbit.channel, err = rabbit.NewChannel()
 	if err != nil {
@@ -133,11 +134,15 @@ func (rabbit *RabbitMQ) SetQueue(config *viper.Viper) (err error) {
 
 func (rabbit *RabbitMQ) RunConsumer(config *viper.Viper, handler ConsumerHandler) (err error) {
 	consumer := &consumer{
+		channel:      rabbit.channel,
 		Name:         config.GetString("name"),
 		ExchangeName: config.GetString("exchange"),
 		QueueName:    config.GetString("queue"),
 		Handler:      handler,
+		WorkersCount: config.GetInt("workers"),
 	}
+
+	consumer.logger = rabbit.logger.WithField("logger", "consumer."+consumer.Name)
 
 	consumer.SetOptions(config.GetStringMap("options"))
 
@@ -161,18 +166,10 @@ func (rabbit *RabbitMQ) RunConsumer(config *viper.Viper, handler ConsumerHandler
 		return
 	}
 
-	for i := 1; i <= config.GetInt("workers"); i++ {
-		worker := &consumerWorker{
-			Tag:  fmt.Sprintf("%s_%d", consumer.Name, i),
-			Done: make(chan struct{}, 1),
-		}
-		worker.logger = rabbit.logger.WithField("logger", "consumer."+worker.Tag)
+	consumer.CreateWorkers()
 
-		if err = consumer.runWorker(rabbit.channel, worker); err != nil {
-			return
-		}
-
-		consumer.AddWorker(worker)
+	if err = consumer.RunWorkers(); err != nil {
+		return
 	}
 
 	queue.AddConsumer(consumer)
@@ -180,13 +177,77 @@ func (rabbit *RabbitMQ) RunConsumer(config *viper.Viper, handler ConsumerHandler
 	return
 }
 
+func (rabbit *RabbitMQ) connect() (err error) {
+	rabbit.logger.Debugf("Start dialing connection to RabbitMQ: %s", rabbit.dsn)
+
+	if rabbit.connection, err = amqp.Dial(rabbit.dsn); err != nil {
+		return
+	}
+
+	go func() {
+		rabbit.logger.Warnf("Ooops! RabbitMQ connection is closed: %s", <-rabbit.connection.NotifyClose(make(chan wabbit.Error)))
+
+		rabbit.reconnect()
+	}()
+
+	return
+}
+
+func (rabbit *RabbitMQ) reconnect() (ok bool) {
+	rabbit.reconnectToRabbit(rabbit.reconDelay)
+
+	// TODO: Refactor this after implementing producers!
+	for _, exchange := range rabbit.exchanges {
+		for _, queue := range exchange.queues {
+			for _, consumer := range queue.consumers {
+				consumer.channel = rabbit.channel
+
+				if err := consumer.RunWorkers(); err != nil {
+					consumer.logger.Warnf("Cant rerun consumer workers: %s", err)
+					rabbit.reconnect()
+
+					return
+				}
+			}
+		}
+	}
+
+	return true
+}
+
+func (rabbit *RabbitMQ) reconnectToRabbit(delay time.Duration) {
+	time.Sleep(delay)
+
+	delay += time.Millisecond * 500
+
+	var err error
+
+	if err = rabbit.connect(); err != nil {
+		rabbit.logger.Warnf("Can't reconnect to RabbitMQ: %s", err)
+		rabbit.logger.Infof("Sleep before next reconnection: %v sec.", delay.Seconds())
+
+		rabbit.reconnectToRabbit(delay)
+
+		return
+	}
+
+	if rabbit.channel, err = rabbit.NewChannel(); err != nil {
+		rabbit.logger.Warnf("Can't reopen RabbitMQ channel: %s", err)
+		rabbit.logger.Infof("Sleep before next reconnection: %v sec.", delay.Seconds())
+
+		rabbit.reconnectToRabbit(delay)
+
+		return
+	}
+}
+
 var globalRabbit *RabbitMQ
 
-// InitGlobal initializes the connection to the RabbitMQ in a global variable `MQ`
-// so that you can use it anywhere in your application. But, I think this is a bad
-// practice, so avoid global variables if you have the opportunity.
-func InitGlobal(dsn string) (err error) {
-	globalRabbit, err = New(dsn)
+// InitGlobal initializes the connection to the RabbitMQ in variable
+// `globalRabbit` so that you can use it anywhere in your application.
+// But, this is a bad practice, try to avoid global variables if you can.
+func InitGlobal(config *viper.Viper) (err error) {
+	globalRabbit, err = New(config)
 	if err != nil {
 		return err
 	}
@@ -194,8 +255,9 @@ func InitGlobal(dsn string) (err error) {
 	return nil
 }
 
-// MQ return link to global RabbitMQ object. Ensure that before calling this function,
-// you initialized the connection globally with calling of `InitGlobal` function.
+// MQ return pointer to global RabbitMQ object. Ensure that
+// before calling this function, you initialized the connection
+// globally with calling of `InitGlobal` function.
 func MQ() *RabbitMQ {
 	return globalRabbit
 }
