@@ -1,0 +1,19 @@
+hash: 70656ec9f460cef422b5ddc9f05cf23c723fddbe8676234261279f9a5ab5625e
+updated: 2017-05-24T15:23:30.323753559+03:00
+imports:
+- name: github.com/getsentry/raven-go
+  version: b68337dbf03e7fbb53d9fd9b63fd09b28e8f13f7
+- name: github.com/NeowayLabs/wabbit
+  version: ec19f8a4a602c73106058eb6c5d5faf1299ee34c
+  subpackages:
+  - amqp
+  - utils
+- name: github.com/Sirupsen/logrus
+  version: ba1b36c82c5e05c4f912a88eab0dcd91a171688f
+  repo: https://github.com/sirupsen/logrus.git
+  vcs: git
+- name: github.com/spf13/viper
+  version: 84f94806c67f59dd7ae87bc5351f7a9c94a4558d
+- name: github.com/streadway/amqp
+  version: afe8eee29a74d213b1f3fb2586058157c397da60
+testImports: []
