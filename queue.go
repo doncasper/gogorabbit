@@ -3,7 +3,7 @@ package gogorabbit
 type queues map[string]*queue
 
 func (q queues) AddQueue(queue *queue) {
-	q[queue.Name] = queue
+	q[queue.name] = queue
 }
 
 func (q queues) GetQueue(name string) (queue *queue, ok bool) {
@@ -15,7 +15,7 @@ func (q queues) GetQueue(name string) (queue *queue, ok bool) {
 type queue struct {
 	options
 	consumers
-	Name         string
-	ExchangeName string
-	BindKey      string
+	name         string
+	exchangeName string
+	bindKey      string
 }

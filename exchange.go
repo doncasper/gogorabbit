@@ -3,7 +3,7 @@ package gogorabbit
 type exchanges map[string]*exchange
 
 func (e exchanges) AddExchange(exchange *exchange) {
-	e[exchange.Name] = exchange
+	e[exchange.name] = exchange
 }
 
 func (e exchanges) GetExchange(name string) (exchange *exchange, ok bool) {
@@ -15,6 +15,7 @@ func (e exchanges) GetExchange(name string) (exchange *exchange, ok bool) {
 type exchange struct {
 	options
 	queues
-	Name string
-	Type string
+	producers
+	name         string
+	exchangeType string
 }

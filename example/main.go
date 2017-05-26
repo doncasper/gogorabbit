@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -12,13 +13,7 @@ import (
 const dsn = "amqp://guest:guest@localhost:5672/"
 
 func consumerHandler(data []byte) error {
-	id := time.Now().UnixNano()
-	log.Printf("[%d] Started processing: %s\n", id, data)
-
-	// Some log message processing:
-	time.Sleep(time.Second * 5)
-
-	log.Printf("[%d] Finished processing: %s\n", id, data)
+	log.Printf("[CONSUMED] %s\n", data)
 
 	return nil
 }
@@ -41,12 +36,30 @@ func runMQ(config *viper.Viper) {
 		log.Fatal(err)
 	}
 
-	//rabbit.RunProducer(config.Sub("producer.stats"))
+	if err := rabbit.RegisterProducer(config.Sub("producers.test_producer")); err != nil {
+		log.Fatal(err)
+	}
+
+	p, ok := rabbit.GetProducer("test-producer")
+	if !ok {
+		log.Fatal("Cant find producer!")
+	}
+
+	go func() {
+		for {
+			msg := fmt.Sprintf("Current TS: %d", time.Now().Unix())
+
+			log.Printf("[PRODUCED] %s\n", msg)
+			p.Produce([]byte(msg))
+			time.Sleep(time.Millisecond * 100)
+		}
+	}()
 }
 
 func main() {
 	logrus.SetLevel(logrus.DebugLevel)
 
+	// TODO: Move to config file!
 	viper.Set("mq", map[string]interface{}{
 		"dsn":                dsn,
 		"reconnection_delay": 2, // Seconds
@@ -86,6 +99,17 @@ func main() {
 					"exclusive": false,
 					"no_local":  false,
 					"no_wait":   false,
+				},
+			},
+		},
+		"producers": map[string]interface{}{
+			"test_producer": map[string]interface{}{
+				"name":        "test-producer",
+				"exchange":    "test-exchange",
+				"routing_key": "test-key",
+				"buffer_size": 10,
+				"options": map[string]interface{}{
+					"deliveryMode": 2, // Persistent
 				},
 			},
 		},

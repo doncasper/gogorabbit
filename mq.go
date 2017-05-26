@@ -7,7 +7,6 @@ import (
 
 	"github.com/NeowayLabs/wabbit"
 	"github.com/NeowayLabs/wabbit/amqp"
-	"github.com/Sirupsen/logrus"
 	"github.com/spf13/viper"
 )
 
@@ -18,11 +17,10 @@ type DoneChannel chan struct{}
 type RabbitMQ struct {
 	sync.Mutex
 	exchanges
-	dsn          string
-	reconDelay   time.Duration // Seconds
-	connection   wabbit.Conn
-	channel      wabbit.Channel
-	logger       logrus.FieldLogger
+	dsn        string
+	reconDelay time.Duration // Seconds
+	connection wabbit.Conn
+	channel    wabbit.Channel
 }
 
 func New(config *viper.Viper) (*RabbitMQ, error) {
@@ -32,7 +30,6 @@ func New(config *viper.Viper) (*RabbitMQ, error) {
 		dsn:        config.GetString("dsn"),
 		reconDelay: config.GetDuration("reconnection_delay") * time.Second,
 		exchanges:  make(exchanges),
-		logger:     logrus.WithField("logger", "gogorabbit"),
 	}
 
 	err = rabbit.connect()
@@ -53,28 +50,26 @@ func New(config *viper.Viper) (*RabbitMQ, error) {
 }
 
 func (rabbit *RabbitMQ) NewChannel() (wabbit.Channel, error) {
-	rabbit.logger.Debug("Get channel for RabbitMQ connection!")
 	return rabbit.connection.Channel()
 }
 
 func (rabbit *RabbitMQ) SetExchange(config *viper.Viper) (err error) {
-	rabbit.logger.Debugf("Start setting exchange: %s", config.GetString("name"))
-
 	if _, ok := rabbit.GetExchange(config.GetString("name")); ok {
 		return fmt.Errorf("Rabbit is already connected to %s exchange.", config.GetString("name"))
 	}
 
 	exchange := &exchange{
-		Name:   config.GetString("name"),
-		Type:   config.GetString("type"),
-		queues: make(queues),
+		name:         config.GetString("name"),
+		exchangeType: config.GetString("type"),
+		queues:       make(queues),
+		producers:    make(producers),
 	}
 
 	exchange.SetOptions(config.GetStringMap("options"))
 
 	if err = rabbit.channel.ExchangeDeclare(
-		exchange.Name,
-		exchange.Type,
+		exchange.name,
+		exchange.exchangeType,
 		exchange.Options(),
 	); err != nil {
 		return fmt.Errorf("Can't decalare exchange: %s", err)
@@ -97,31 +92,27 @@ func (rabbit *RabbitMQ) SetQueue(config *viper.Viper) (err error) {
 		return fmt.Errorf("Queue %s is already binded to %s exchange.", queueName, config.GetString("exchange"))
 	}
 
-	rabbit.logger.Debugf("Start setting queue %s for exchange: %s", queueName, exchangeName)
-
 	queue := &queue{
-		Name:         queueName,
-		ExchangeName: exchangeName,
-		BindKey:      config.GetString("bind_key"),
+		name:         queueName,
+		exchangeName: exchangeName,
+		bindKey:      config.GetString("bind_key"),
 		consumers:    make(consumers),
 	}
 
 	queue.SetOptions(config.GetStringMap("options"))
 
-	rabbit.logger.Debugf("Declare queue %s in RabbitMQ channel!", queue.Name)
 	_, err = rabbit.channel.QueueDeclare(
-		queue.Name,
+		queue.name,
 		queue.Options(),
 	)
 	if err != nil {
-		return fmt.Errorf("Cant declare queue: %s (%s)", queue.Name, err)
+		return fmt.Errorf("Cant declare queue: %s (%s)", queue.name, err)
 	}
 
-	rabbit.logger.Debugf("Bind queue %s to RabbitMQ channel!", queue.Name)
 	if err = rabbit.channel.QueueBind(
-		queue.Name,
-		queue.BindKey,
-		queue.ExchangeName,
+		queue.name,
+		queue.bindKey,
+		queue.exchangeName,
 		queue.Options(),
 	); err != nil {
 		return fmt.Errorf("Queue Bind: %s", err)
@@ -134,34 +125,37 @@ func (rabbit *RabbitMQ) SetQueue(config *viper.Viper) (err error) {
 
 func (rabbit *RabbitMQ) RunConsumer(config *viper.Viper, handler ConsumerHandler) (err error) {
 	consumer := &consumer{
-		channel:      rabbit.channel,
-		Name:         config.GetString("name"),
-		ExchangeName: config.GetString("exchange"),
-		QueueName:    config.GetString("queue"),
-		Handler:      handler,
-		WorkersCount: config.GetInt("workers"),
+		name:         config.GetString("name"),
+		exchangeName: config.GetString("exchange"),
+		queueName:    config.GetString("queue"),
+		handler:      handler,
+		workersCount: config.GetInt("workers"),
 	}
 
-	consumer.logger = rabbit.logger.WithField("logger", "consumer."+consumer.Name)
+	channel, err := rabbit.NewChannel()
+	if err != nil {
+		return
+	}
+	consumer.channel = channel
 
 	consumer.SetOptions(config.GetStringMap("options"))
 
-	exchange, ok := rabbit.GetExchange(consumer.ExchangeName)
+	exchange, ok := rabbit.GetExchange(consumer.exchangeName)
 	if !ok {
-		err = fmt.Errorf("The exchange: %s is not yet initialized!", consumer.ExchangeName)
+		err = fmt.Errorf("The exchange: %s is not yet initialized!", consumer.exchangeName)
 
 		return
 	}
 
-	queue, ok := exchange.GetQueue(consumer.QueueName)
+	queue, ok := exchange.GetQueue(consumer.queueName)
 	if !ok {
-		err = fmt.Errorf("The queue: %s is not yet initialized for exchange: %s", consumer.QueueName, consumer.ExchangeName)
+		err = fmt.Errorf("The queue: %s is not yet initialized for exchange: %s", consumer.queueName, consumer.exchangeName)
 
 		return
 	}
 
-	if _, ok := queue.GetConsumer(consumer.QueueName); ok {
-		err = fmt.Errorf("Consumer: %s is already runned for %s queue.", consumer.Name, queue.Name)
+	if _, ok := queue.GetConsumer(consumer.queueName); ok {
+		err = fmt.Errorf("Consumer: %s is already runned for %s queue.", consumer.name, queue.name)
 
 		return
 	}
@@ -177,16 +171,53 @@ func (rabbit *RabbitMQ) RunConsumer(config *viper.Viper, handler ConsumerHandler
 	return
 }
 
-func (rabbit *RabbitMQ) connect() (err error) {
-	rabbit.logger.Debugf("Start dialing connection to RabbitMQ: %s", rabbit.dsn)
+func (rabbit *RabbitMQ) RegisterProducer(config *viper.Viper) (err error) {
+	producer := &producer{
+		name:           config.GetString("name"),
+		exchangeName:   config.GetString("exchange"),
+		routingKey:     config.GetString("routing_key"),
+		publishChannel: make(chan []byte, config.GetInt("buffer_size")),
+	}
 
+	producer.SetOptions(config.GetStringMap("options"))
+
+	exchange, ok := rabbit.GetExchange(producer.exchangeName)
+	if !ok {
+		err = fmt.Errorf("The exchange: %s is not yet initialized!", producer.exchangeName)
+
+		return
+	}
+
+	channel, err := rabbit.NewChannel()
+	if err != nil {
+		return err
+	}
+
+	producer.setChannel(channel)
+
+	go producer.worker()
+
+	exchange.AddProducer(producer)
+
+	return
+}
+
+func (rabbit *RabbitMQ) GetProducer(name string) (producer *producer, ok bool) {
+	for _, exchange := range rabbit.exchanges {
+		if producer, ok = exchange.GetProducer(name); ok {
+			return
+		}
+	}
+
+	return nil, false
+}
+
+func (rabbit *RabbitMQ) connect() (err error) {
 	if rabbit.connection, err = amqp.Dial(rabbit.dsn); err != nil {
 		return
 	}
 
 	go func() {
-		rabbit.logger.Warnf("Ooops! RabbitMQ connection is closed: %s", <-rabbit.connection.NotifyClose(make(chan wabbit.Error)))
-
 		rabbit.reconnect()
 	}()
 
@@ -223,18 +254,12 @@ func (rabbit *RabbitMQ) reconnectToRabbit(delay time.Duration) {
 	var err error
 
 	if err = rabbit.connect(); err != nil {
-		rabbit.logger.Warnf("Can't reconnect to RabbitMQ: %s", err)
-		rabbit.logger.Infof("Sleep before next reconnection: %v sec.", delay.Seconds())
-
 		rabbit.reconnectToRabbit(delay)
 
 		return
 	}
 
 	if rabbit.channel, err = rabbit.NewChannel(); err != nil {
-		rabbit.logger.Warnf("Can't reopen RabbitMQ channel: %s", err)
-		rabbit.logger.Infof("Sleep before next reconnection: %v sec.", delay.Seconds())
-
 		rabbit.reconnectToRabbit(delay)
 
 		return

@@ -14,16 +14,13 @@ func (w *consumerWorkers) AddWorker(worker *consumerWorker) {
 }
 
 type consumerWorker struct {
-	Tag    string
-	Done   chan struct{}
-	logger logrus.FieldLogger
+	tag    string
+	done   chan struct{}
 }
 
 func (w *consumerWorker) Handle(deliveries <-chan wabbit.Delivery, handler ConsumerHandler) {
 	for d := range deliveries {
 		if err := handler(d.Body()); err != nil {
-			w.logger.Errorf("Handler error for consumer %s: %v", d.ConsumerTag(), err)
-
 			d.Nack(false, true)
 
 			continue
@@ -32,14 +29,13 @@ func (w *consumerWorker) Handle(deliveries <-chan wabbit.Delivery, handler Consu
 		d.Ack(false)
 	}
 
-	w.logger.Infof("Consumers worker: %s is stopped!", w.Tag)
-	w.Done <- struct{}{}
+	w.done <- struct{}{}
 }
 
 type consumers map[string]*consumer
 
 func (c consumers) AddConsumer(consumer *consumer) {
-	c[consumer.Name] = consumer
+	c[consumer.name] = consumer
 }
 
 func (c consumers) GetConsumer(name string) (consumer *consumer, ok bool) {
@@ -52,21 +48,20 @@ type consumer struct {
 	options
 	consumerWorkers
 	channel      wabbit.Channel
-	Name         string
-	WorkersCount int
-	QueueName    string
-	ExchangeName string
-	Handler      ConsumerHandler
+	name         string
+	workersCount int
+	queueName    string
+	exchangeName string
+	handler      ConsumerHandler
 	logger       logrus.FieldLogger
 }
 
 func (c *consumer) CreateWorkers() {
-	for i := 1; i <= c.WorkersCount; i++ {
+	for i := 1; i <= c.workersCount; i++ {
 		worker := &consumerWorker{
-			Tag:  fmt.Sprintf("%s_%d", c.Name, i),
-			Done: make(chan struct{}, 1),
+			tag:  fmt.Sprintf("%s_%d", c.name, i),
+			done: make(chan struct{}, 1),
 		}
-		worker.logger = c.logger.WithField("logger", "consumer."+worker.Tag)
 
 		c.AddWorker(worker)
 	}
@@ -83,18 +78,16 @@ func (c *consumer) RunWorkers() (err error) {
 }
 
 func (c *consumer) runWorker(worker *consumerWorker) (err error) {
-	worker.logger.Debug("Running consumer worker!")
-
 	deliveries, err := c.channel.Consume(
-		c.QueueName,
-		worker.Tag,
+		c.queueName,
+		worker.tag,
 		c.Options(),
 	)
 	if err != nil {
 		return fmt.Errorf("Queue Consume: %s", err)
 	}
 
-	go worker.Handle(deliveries, c.Handler)
+	go worker.Handle(deliveries, c.handler)
 
 	return
 }
