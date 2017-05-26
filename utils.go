@@ -44,3 +44,24 @@ func (o *options) SetOptions(options map[string]interface{}) {
 func (o *options) Options() wabbit.Option {
 	return wabbit.Option(*o)
 }
+
+type ErrorSender interface {
+	SendError(error)
+}
+
+type errorChannel chan error
+
+func (e errorChannel) SendError(err error) {
+	e <- err
+}
+
+// Delivery is an interface to delivered messages
+type Delivery interface {
+	Ack(multiple bool) error
+	Nack(multiple, requeue bool) error
+	Reject(requeue bool) error
+
+	Body() []byte
+	DeliveryTag() uint64
+	ConsumerTag() string
+}

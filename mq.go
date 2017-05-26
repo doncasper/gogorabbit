@@ -7,29 +7,46 @@ import (
 
 	"github.com/NeowayLabs/wabbit"
 	"github.com/NeowayLabs/wabbit/amqp"
-	"github.com/spf13/viper"
 )
 
-type ConsumerHandler func([]byte) error
+// After each failed attempt to establish a connection to the
+// RabbitMQ, reconnect delay will be increased in percent.
+const reconnectTimeStep = 15
 
 type DoneChannel chan struct{}
 
 type RabbitMQ struct {
 	sync.Mutex
 	exchanges
-	dsn        string
-	reconDelay time.Duration // Seconds
-	connection wabbit.Conn
-	channel    wabbit.Channel
+	errorChannel
+	dsn            string
+	reconnectDelay time.Duration // Seconds
+	connection     wabbit.Conn
+	channel        wabbit.Channel
 }
 
-func New(config *viper.Viper) (*RabbitMQ, error) {
+type mqConfig map[string]interface{}
+
+func (c mqConfig) GetInt(key string) int {
+	return c[key].(int)
+}
+
+func (c mqConfig) GetString(key string) string {
+	return c[key].(string)
+}
+
+func (c mqConfig) GetStringMap(key string) map[string]interface{} {
+	return c[key].(map[string]interface{})
+}
+
+func New(dsn string, reconnectDelay time.Duration) (*RabbitMQ, error) {
 	var err error
 
 	rabbit := &RabbitMQ{
-		dsn:        config.GetString("dsn"),
-		reconDelay: config.GetDuration("reconnection_delay") * time.Second,
-		exchanges:  make(exchanges),
+		exchanges:      make(exchanges),
+		dsn:            dsn,
+		reconnectDelay: reconnectDelay * time.Second,
+		errorChannel:   make(chan error, 5),
 	}
 
 	err = rabbit.connect()
@@ -42,32 +59,30 @@ func New(config *viper.Viper) (*RabbitMQ, error) {
 		return nil, fmt.Errorf("Cant get new channel for RabbitMQ connection: %s", err)
 	}
 
-	if err := rabbit.channel.Qos(1, 0, false); err != nil {
-		return nil, err
-	}
-
 	return rabbit, nil
 }
 
-func (rabbit *RabbitMQ) NewChannel() (wabbit.Channel, error) {
-	return rabbit.connection.Channel()
+func (mq *RabbitMQ) NewChannel() (wabbit.Channel, error) {
+	return mq.connection.Channel()
 }
 
-func (rabbit *RabbitMQ) SetExchange(config *viper.Viper) (err error) {
-	if _, ok := rabbit.GetExchange(config.GetString("name")); ok {
-		return fmt.Errorf("Rabbit is already connected to %s exchange.", config.GetString("name"))
+func (mq *RabbitMQ) SetExchange(config map[string]interface{}) (err error) {
+	conf := mqConfig(config)
+
+	if _, ok := mq.GetExchange(conf.GetString("name")); ok {
+		return fmt.Errorf("Rabbit is already connected to %s exchange.", conf.GetString("name"))
 	}
 
 	exchange := &exchange{
-		name:         config.GetString("name"),
-		exchangeType: config.GetString("type"),
 		queues:       make(queues),
 		producers:    make(producers),
+		name:         conf.GetString("name"),
+		exchangeType: conf.GetString("type"),
 	}
 
-	exchange.SetOptions(config.GetStringMap("options"))
+	exchange.SetOptions(conf.GetStringMap("options"))
 
-	if err = rabbit.channel.ExchangeDeclare(
+	if err = mq.channel.ExchangeDeclare(
 		exchange.name,
 		exchange.exchangeType,
 		exchange.Options(),
@@ -75,33 +90,35 @@ func (rabbit *RabbitMQ) SetExchange(config *viper.Viper) (err error) {
 		return fmt.Errorf("Can't decalare exchange: %s", err)
 	}
 
-	rabbit.AddExchange(exchange)
+	mq.AddExchange(exchange)
 
 	return
 }
 
-func (rabbit *RabbitMQ) SetQueue(config *viper.Viper) (err error) {
-	exchangeName := config.GetString("exchange")
-	exchange, ok := rabbit.exchanges[exchangeName]
+func (mq *RabbitMQ) SetQueue(config map[string]interface{}) (err error) {
+	conf := mqConfig(config)
+
+	exchangeName := conf.GetString("exchange")
+	exchange, ok := mq.exchanges[exchangeName]
 	if !ok {
 		return fmt.Errorf("You should set up exchange, before bind queue to %s exchange.", exchangeName)
 	}
 
-	queueName := config.GetString("name")
-	if _, ok := rabbit.exchanges[exchangeName].queues[queueName]; ok {
-		return fmt.Errorf("Queue %s is already binded to %s exchange.", queueName, config.GetString("exchange"))
+	queueName := conf.GetString("name")
+	if _, ok := mq.exchanges[exchangeName].queues[queueName]; ok {
+		return fmt.Errorf("Queue %s is already binded to %s exchange.", queueName, exchangeName)
 	}
 
 	queue := &queue{
+		consumers:    make(consumers),
 		name:         queueName,
 		exchangeName: exchangeName,
-		bindKey:      config.GetString("bind_key"),
-		consumers:    make(consumers),
+		bindKey:      conf.GetString("bind_key"),
 	}
 
-	queue.SetOptions(config.GetStringMap("options"))
+	queue.SetOptions(conf.GetStringMap("options"))
 
-	_, err = rabbit.channel.QueueDeclare(
+	_, err = mq.channel.QueueDeclare(
 		queue.name,
 		queue.Options(),
 	)
@@ -109,7 +126,7 @@ func (rabbit *RabbitMQ) SetQueue(config *viper.Viper) (err error) {
 		return fmt.Errorf("Cant declare queue: %s (%s)", queue.name, err)
 	}
 
-	if err = rabbit.channel.QueueBind(
+	if err = mq.channel.QueueBind(
 		queue.name,
 		queue.bindKey,
 		queue.exchangeName,
@@ -123,24 +140,30 @@ func (rabbit *RabbitMQ) SetQueue(config *viper.Viper) (err error) {
 	return
 }
 
-func (rabbit *RabbitMQ) RunConsumer(config *viper.Viper, handler ConsumerHandler) (err error) {
+func (mq *RabbitMQ) RunConsumer(config map[string]interface{}, handler ConsumerHandler) (err error) {
+	conf := mqConfig(config)
+
 	consumer := &consumer{
-		name:         config.GetString("name"),
-		exchangeName: config.GetString("exchange"),
-		queueName:    config.GetString("queue"),
+		name:         conf.GetString("name"),
+		exchangeName: conf.GetString("exchange"),
+		queueName:    conf.GetString("queue"),
 		handler:      handler,
-		workersCount: config.GetInt("workers"),
+		workersCount: conf.GetInt("workers"),
+		errorChannel: mq.errorChannel,
 	}
 
-	channel, err := rabbit.NewChannel()
+	channel, err := mq.NewChannel()
 	if err != nil {
 		return
 	}
-	consumer.channel = channel
 
-	consumer.SetOptions(config.GetStringMap("options"))
+	if err = consumer.setChannel(channel); err != nil {
+		return
+	}
 
-	exchange, ok := rabbit.GetExchange(consumer.exchangeName)
+	consumer.SetOptions(conf.GetStringMap("options"))
+
+	exchange, ok := mq.GetExchange(consumer.exchangeName)
 	if !ok {
 		err = fmt.Errorf("The exchange: %s is not yet initialized!", consumer.exchangeName)
 
@@ -171,24 +194,27 @@ func (rabbit *RabbitMQ) RunConsumer(config *viper.Viper, handler ConsumerHandler
 	return
 }
 
-func (rabbit *RabbitMQ) RegisterProducer(config *viper.Viper) (err error) {
+func (mq *RabbitMQ) RegisterProducer(config map[string]interface{}) (err error) {
+	conf := mqConfig(config)
+
 	producer := &producer{
-		name:           config.GetString("name"),
-		exchangeName:   config.GetString("exchange"),
-		routingKey:     config.GetString("routing_key"),
-		publishChannel: make(chan []byte, config.GetInt("buffer_size")),
+		name:           conf.GetString("name"),
+		exchangeName:   conf.GetString("exchange"),
+		routingKey:     conf.GetString("routing_key"),
+		publishChannel: make(chan []byte, conf.GetInt("buffer_size")),
+		errorChannel:   mq.errorChannel,
 	}
 
-	producer.SetOptions(config.GetStringMap("options"))
+	producer.SetOptions(conf.GetStringMap("options"))
 
-	exchange, ok := rabbit.GetExchange(producer.exchangeName)
+	exchange, ok := mq.GetExchange(producer.exchangeName)
 	if !ok {
 		err = fmt.Errorf("The exchange: %s is not yet initialized!", producer.exchangeName)
 
 		return
 	}
 
-	channel, err := rabbit.NewChannel()
+	channel, err := mq.NewChannel()
 	if err != nil {
 		return err
 	}
@@ -202,8 +228,8 @@ func (rabbit *RabbitMQ) RegisterProducer(config *viper.Viper) (err error) {
 	return
 }
 
-func (rabbit *RabbitMQ) GetProducer(name string) (producer *producer, ok bool) {
-	for _, exchange := range rabbit.exchanges {
+func (mq *RabbitMQ) GetProducer(name string) (producer *producer, ok bool) {
+	for _, exchange := range mq.exchanges {
 		if producer, ok = exchange.GetProducer(name); ok {
 			return
 		}
@@ -212,67 +238,103 @@ func (rabbit *RabbitMQ) GetProducer(name string) (producer *producer, ok bool) {
 	return nil, false
 }
 
-func (rabbit *RabbitMQ) connect() (err error) {
-	if rabbit.connection, err = amqp.Dial(rabbit.dsn); err != nil {
+func (mq *RabbitMQ) Errors() chan error {
+	return mq.errorChannel
+}
+
+func (mq *RabbitMQ) connect() (err error) {
+	if mq.connection, err = amqp.Dial(mq.dsn); err != nil {
 		return
 	}
 
 	go func() {
-		rabbit.reconnect()
+		mq.errorChannel <- fmt.Errorf(
+			"Ooops! RabbitMQ connection is closed: %s",
+			<-mq.connection.NotifyClose(make(chan wabbit.Error)),
+		)
+
+		mq.reconnect()
 	}()
 
 	return
 }
 
-func (rabbit *RabbitMQ) reconnect() (ok bool) {
-	rabbit.reconnectToRabbit(rabbit.reconDelay)
+func (mq *RabbitMQ) reconnect() (ok bool) {
+	mq.reconnectToRabbit(mq.reconnectDelay)
 
-	// TODO: Refactor this after implementing producers!
-	for _, exchange := range rabbit.exchanges {
+	for _, exchange := range mq.exchanges {
 		for _, queue := range exchange.queues {
 			for _, consumer := range queue.consumers {
-				consumer.channel = rabbit.channel
+				channel, err := mq.NewChannel()
+				if err != nil {
+					return
+				}
+
+				if err = consumer.setChannel(channel); err != nil {
+					return
+				}
 
 				if err := consumer.RunWorkers(); err != nil {
-					consumer.logger.Warnf("Cant rerun consumer workers: %s", err)
-					rabbit.reconnect()
+					mq.reconnect()
 
 					return
 				}
 			}
+		}
+
+		for _, producer := range exchange.producers {
+			channel, err := mq.NewChannel()
+			if err != nil {
+				return
+			}
+
+			producer.setChannel(channel)
 		}
 	}
 
 	return true
 }
 
-func (rabbit *RabbitMQ) reconnectToRabbit(delay time.Duration) {
+func (mq *RabbitMQ) reconnectToRabbit(delay time.Duration) {
 	time.Sleep(delay)
 
-	delay += time.Millisecond * 500
+	delay = increaseDelay(delay)
 
 	var err error
 
-	if err = rabbit.connect(); err != nil {
-		rabbit.reconnectToRabbit(delay)
+	if err = mq.connect(); err != nil {
+		mq.errorChannel <- fmt.Errorf(
+			"Can't reconnect to RabbitMQ: %s. Next reconnection after: %.2f sec.",
+			err, delay.Seconds(),
+		)
+
+		mq.reconnectToRabbit(delay)
 
 		return
 	}
 
-	if rabbit.channel, err = rabbit.NewChannel(); err != nil {
-		rabbit.reconnectToRabbit(delay)
+	if mq.channel, err = mq.NewChannel(); err != nil {
+		mq.errorChannel <- fmt.Errorf(
+			"Can't reconnect to RabbitMQ: %s. Next reconnection after: %.2f sec.",
+			err, delay.Seconds(),
+		)
+
+		mq.reconnectToRabbit(delay)
 
 		return
 	}
+}
+
+func increaseDelay(delay time.Duration) time.Duration {
+	return delay + delay * reconnectTimeStep / 100
 }
 
 var globalRabbit *RabbitMQ
 
 // InitGlobal initializes the connection to the RabbitMQ in variable
 // `globalRabbit` so that you can use it anywhere in your application.
-// But, this is a bad practice, try to avoid global variables if you can.
-func InitGlobal(config *viper.Viper) (err error) {
-	globalRabbit, err = New(config)
+func InitGlobal(dsn string, reconnectDelay time.Duration) (err error) {
+	globalRabbit, err = New(dsn, reconnectDelay)
 	if err != nil {
 		return err
 	}

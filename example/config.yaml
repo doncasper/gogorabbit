@@ -1,6 +1,6 @@
 mq:
   dsn: "amqp://guest:guest@localhost:5672/"
-  reconnection_delay: 2 # Seconds
+  reconnect_delay: 2 # Seconds
 
   exchanges:
     test_exchange:

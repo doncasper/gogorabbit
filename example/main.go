@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -9,31 +10,59 @@ import (
 	"github.com/spf13/viper"
 )
 
-func consumerHandler(data []byte) error {
-	log.Printf("[CONSUMED] %s\n", data)
+type Message struct {
+	Body      string `json:"msg"`
+	Producer  string `json:"producer"`
+	Timestamp int64  `json:"ts"`
+}
 
-	return nil
+func consumerHandler(delivery gogorabbit.Delivery, sender gogorabbit.ErrorSender) {
+	log.Printf("<<< %s: %s\n", delivery.ConsumerTag(), delivery.Body())
+
+	var message Message
+
+	if err := json.Unmarshal(delivery.Body(), &message); err != nil {
+		// We can send errors for logging.
+		sender.SendError(err)
+
+		// We do not want to return the broken message to the
+		// queue, so we pass the argument `requeue` as `false`.
+		delivery.Nack(false, false)
+
+		return
+	}
+
+	log.Printf("--- Processed message: %s from %s at %d", message.Body, message.Producer, message.Timestamp)
+
+	delivery.Ack(false)
 }
 
 func runRabbitMQ(config *viper.Viper) {
-	rabbit, err := gogorabbit.New(config)
+	rabbit, err := gogorabbit.New(config.GetString("dsn"), config.GetDuration("reconnect_delay"))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err := rabbit.SetExchange(config.Sub("exchanges.test_exchange")); err != nil {
+	// Log RabbitMQ errors.
+	go func() {
+		for err := range rabbit.Errors() {
+			log.Println(err)
+		}
+	}()
+
+	if err := rabbit.SetExchange(config.GetStringMap("exchanges.test_exchange")); err != nil {
 		log.Fatal(err)
 	}
 
-	if err := rabbit.SetQueue(config.Sub("queues.test_queue")); err != nil {
+	if err := rabbit.SetQueue(config.GetStringMap("queues.test_queue")); err != nil {
 		log.Fatal(err)
 	}
 
-	if err := rabbit.RunConsumer(config.Sub("consumers.test_consumer"), consumerHandler); err != nil {
+	if err := rabbit.RunConsumer(config.GetStringMap("consumers.test_consumer"), consumerHandler); err != nil {
 		log.Fatal(err)
 	}
 
-	if err := rabbit.RegisterProducer(config.Sub("producers.test_producer")); err != nil {
+	if err := rabbit.RegisterProducer(config.GetStringMap("producers.test_producer")); err != nil {
 		log.Fatal(err)
 	}
 
@@ -44,11 +73,12 @@ func runRabbitMQ(config *viper.Viper) {
 
 	go func() {
 		for {
-			msg := fmt.Sprintf("Current TS: %d", time.Now().Unix())
+			msg := fmt.Sprintf(`{"msg": "Hello!", "producer": "%s", "ts": %d}`, p.Name(), time.Now().Unix())
 
-			log.Printf("[PRODUCED] %s\n", msg)
+			log.Println(">>>", msg)
 			p.Produce([]byte(msg))
-			time.Sleep(time.Millisecond * 100)
+
+			time.Sleep(time.Millisecond * 2000)
 		}
 	}()
 }
@@ -62,6 +92,6 @@ func main() {
 
 	runRabbitMQ(viper.Sub("mq"))
 
-	// Run pseudo server
+	// Run pseudo server.
 	select {}
 }

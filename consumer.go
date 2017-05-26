@@ -6,39 +6,37 @@ import (
 	"github.com/NeowayLabs/wabbit"
 )
 
+type ConsumerHandler func(delivery Delivery, sender ErrorSender)
+
 type consumerWorkers []*consumerWorker
 
-func (workers *consumerWorkers) AddWorker(worker *consumerWorker) {
-	*workers = append(*workers, worker)
+func (w *consumerWorkers) AddWorker(worker *consumerWorker) {
+	*w = append(*w, worker)
 }
 
 type consumerWorker struct {
-	tag    string
-	done   chan struct{}
+	errorChannel
+	tag          string
+	done         chan struct{}
 }
 
-func (workers *consumerWorker) Handle(deliveries <-chan wabbit.Delivery, handler ConsumerHandler) {
-	for d := range deliveries {
-		if err := handler(d.Body()); err != nil {
-			d.Nack(false, true)
-
-			continue
-		}
-
-		d.Ack(false)
+func (w *consumerWorker) Handle(deliveries <-chan wabbit.Delivery, handler ConsumerHandler) {
+	for delivery := range deliveries {
+		handler(delivery, w.errorChannel)
 	}
 
-	workers.done <- struct{}{}
+	w.SendError(fmt.Errorf("Consumer worker is stoped: %s", w.tag))
+	w.done <- struct{}{}
 }
 
 type consumers map[string]*consumer
 
-func (consumers consumers) AddConsumer(consumer *consumer) {
-	consumers[consumer.name] = consumer
+func (c consumers) AddConsumer(consumer *consumer) {
+	c[consumer.name] = consumer
 }
 
-func (consumers consumers) GetConsumer(name string) (consumer *consumer, ok bool) {
-	consumer, ok = consumers[name]
+func (c consumers) GetConsumer(name string) (consumer *consumer, ok bool) {
+	consumer, ok = c[name]
 
 	return
 }
@@ -46,6 +44,7 @@ func (consumers consumers) GetConsumer(name string) (consumer *consumer, ok bool
 type consumer struct {
 	options
 	consumerWorkers
+	errorChannel
 	channel      wabbit.Channel
 	name         string
 	workersCount int
@@ -54,20 +53,21 @@ type consumer struct {
 	handler      ConsumerHandler
 }
 
-func (consumer *consumer) CreateWorkers() {
-	for i := 1; i <= consumer.workersCount; i++ {
+func (c *consumer) CreateWorkers() {
+	for i := 1; i <= c.workersCount; i++ {
 		worker := &consumerWorker{
-			tag:  fmt.Sprintf("%s_%d", consumer.name, i),
-			done: make(chan struct{}, 1),
+			tag:          fmt.Sprintf("%s_%d", c.name, i),
+			done:         make(chan struct{}, 1),
+			errorChannel: c.errorChannel,
 		}
 
-		consumer.AddWorker(worker)
+		c.AddWorker(worker)
 	}
 }
 
-func (consumer *consumer) RunWorkers() (err error) {
-	for _, worker := range consumer.consumerWorkers {
-		if err = consumer.runWorker(worker); err != nil {
+func (c *consumer) RunWorkers() (err error) {
+	for _, worker := range c.consumerWorkers {
+		if err = c.runWorker(worker); err != nil {
 			return
 		}
 	}
@@ -75,17 +75,23 @@ func (consumer *consumer) RunWorkers() (err error) {
 	return
 }
 
-func (consumer *consumer) runWorker(worker *consumerWorker) (err error) {
-	deliveries, err := consumer.channel.Consume(
-		consumer.queueName,
+func (c *consumer) setChannel(channel wabbit.Channel) error {
+	c.channel = channel
+
+	return c.channel.Qos(1, 0, false)
+}
+
+func (c *consumer) runWorker(worker *consumerWorker) (err error) {
+	deliveries, err := c.channel.Consume(
+		c.queueName,
 		worker.tag,
-		consumer.Options(),
+		c.Options(),
 	)
 	if err != nil {
 		return fmt.Errorf("Queue Consume: %s", err)
 	}
 
-	go worker.Handle(deliveries, consumer.handler)
+	go worker.Handle(deliveries, c.handler)
 
 	return
 }
