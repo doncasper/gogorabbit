@@ -1,0 +1,45 @@
+mq:
+  dsn: "amqp://guest:guest@localhost:5672/"
+  reconnection_delay: 2 # Seconds
+
+  exchanges:
+    test_exchange:
+      name: "test-exchange"
+      type: "direct"
+      options:
+        durable: true
+        delete: false
+        internal: false
+        no_wait: true
+
+  queues:
+    test_queue:
+      name: "test-queue"
+      exchange: "test-exchange"
+      bind_key: "test-key"
+      options:
+        durable: true
+        delete: false
+        exclusive: false
+        no_wait: true
+
+  consumers:
+    test_consumer:
+      name: "test-consumer"
+      workers: 3
+      queue: "test-queue"
+      exchange: "test-exchange"
+      options:
+        no_ack: false
+        exclusive: false
+        no_local: false
+        no_wait: false
+
+  producers:
+    test_producer:
+      name: "test-producer"
+      exchange: "test-exchange"
+      routing_key: "test-key"
+      buffer_size: 10
+      options:
+        delivery_mode: 2 # Persistent

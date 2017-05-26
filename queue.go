@@ -2,12 +2,12 @@ package gogorabbit
 
 type queues map[string]*queue
 
-func (q queues) AddQueue(queue *queue) {
-	q[queue.name] = queue
+func (queues queues) AddQueue(queue *queue) {
+	queues[queue.name] = queue
 }
 
-func (q queues) GetQueue(name string) (queue *queue, ok bool) {
-	queue, ok = q[name]
+func (queues queues) GetQueue(name string) (queue *queue, ok bool) {
+	queue, ok = queues[name]
 
 	return
 }

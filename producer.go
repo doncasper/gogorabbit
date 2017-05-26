@@ -8,12 +8,12 @@ import (
 
 type producers map[string]*producer
 
-func (p producers) AddProducer(producer *producer) {
-	p[producer.name] = producer
+func (producers producers) AddProducer(producer *producer) {
+	producers[producer.name] = producer
 }
 
-func (p producers) GetProducer(name string) (producer *producer, ok bool) {
-	producer, ok = p[name]
+func (producers producers) GetProducer(name string) (producer *producer, ok bool) {
+	producer, ok = producers[name]
 
 	return
 }
@@ -29,28 +29,28 @@ type producer struct {
 }
 
 // Method safely sets new RMQ channel.
-func (p *producer) setChannel(channel wabbit.Channel) {
-	p.Lock()
-	p.channel = channel
-	p.Unlock()
+func (producer *producer) setChannel(channel wabbit.Channel) {
+	producer.Lock()
+	producer.channel = channel
+	producer.Unlock()
 }
 
-func (p *producer) Produce(data []byte) {
-	p.publishChannel <- data
+func (producer *producer) Produce(data []byte) {
+	producer.publishChannel <- data
 }
 
-func (p *producer) worker() {
-	for message := range p.publishChannel {
-		if err := p.produce(message); err != nil {
+func (producer *producer) worker() {
+	for message := range producer.publishChannel {
+		if err := producer.produce(message); err != nil {
 			// TODO: Return errors to errorChannel for logging!
 		}
 	}
 }
 
-func (p *producer) produce(message []byte) (err error) {
-	p.RLock()
-	err = p.channel.Publish(p.exchangeName, p.routingKey, message, p.Options())
-	p.RUnlock()
+func (producer *producer) produce(message []byte) (err error) {
+	producer.RLock()
+	err = producer.channel.Publish(producer.exchangeName, producer.routingKey, message, producer.Options())
+	producer.RUnlock()
 
 	return
 }

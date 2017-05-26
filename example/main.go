@@ -5,12 +5,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/doncasper/gogorabbit"
 	"github.com/spf13/viper"
 )
-
-const dsn = "amqp://guest:guest@localhost:5672/"
 
 func consumerHandler(data []byte) error {
 	log.Printf("[CONSUMED] %s\n", data)
@@ -18,13 +15,13 @@ func consumerHandler(data []byte) error {
 	return nil
 }
 
-func runMQ(config *viper.Viper) {
+func runRabbitMQ(config *viper.Viper) {
 	rabbit, err := gogorabbit.New(config)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err := rabbit.SetExchange(config.Sub("exchangers.test_exchange")); err != nil {
+	if err := rabbit.SetExchange(config.Sub("exchanges.test_exchange")); err != nil {
 		log.Fatal(err)
 	}
 
@@ -57,65 +54,13 @@ func runMQ(config *viper.Viper) {
 }
 
 func main() {
-	logrus.SetLevel(logrus.DebugLevel)
+	viper.SetConfigName("config")
+	viper.AddConfigPath(".")
+	if err := viper.ReadInConfig(); err != nil {
+		panic(fmt.Errorf("Fatal error config file: %s \n", err))
+	}
 
-	// TODO: Move to config file!
-	viper.Set("mq", map[string]interface{}{
-		"dsn":                dsn,
-		"reconnection_delay": 2, // Seconds
-		"exchangers": map[string]interface{}{
-			"test_exchange": map[string]interface{}{
-				"name": "test-exchange",
-				"type": "direct",
-				"options": map[string]interface{}{
-					"durable":  true,
-					"delete":   false,
-					"internal": false,
-					"no_wait":  false,
-				},
-			},
-		},
-		"queues": map[string]interface{}{
-			"test_queue": map[string]interface{}{
-				"name":     "test-queue",
-				"exchange": "test-exchange",
-				"bind_key": "test-key",
-				"options": map[string]interface{}{
-					"durable":   true,
-					"delete":    false,
-					"exclusive": false,
-					"no_wait":   false,
-				},
-			},
-		},
-		"consumers": map[string]interface{}{
-			"test_consumer": map[string]interface{}{
-				"name":     "test-consumer",
-				"workers":  3,
-				"queue":    "test-queue",
-				"exchange": "test-exchange",
-				"options": map[string]interface{}{
-					"no_ack":    false,
-					"exclusive": false,
-					"no_local":  false,
-					"no_wait":   false,
-				},
-			},
-		},
-		"producers": map[string]interface{}{
-			"test_producer": map[string]interface{}{
-				"name":        "test-producer",
-				"exchange":    "test-exchange",
-				"routing_key": "test-key",
-				"buffer_size": 10,
-				"options": map[string]interface{}{
-					"deliveryMode": 2, // Persistent
-				},
-			},
-		},
-	})
-
-	runMQ(viper.Sub("mq"))
+	runRabbitMQ(viper.Sub("mq"))
 
 	// Run pseudo server
 	select {}
