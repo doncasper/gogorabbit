@@ -71,16 +71,16 @@ func runRabbitMQ(config *viper.Viper) {
 		log.Fatal("Cant find producer!")
 	}
 
-	go func() {
+	go func(producer gogorabbit.Producer) {
 		for {
 			msg := fmt.Sprintf(`{"msg": "Hello!", "producer": "%s", "ts": %d}`, p.Name(), time.Now().Unix())
 
 			log.Println(">>>", msg)
-			p.Produce([]byte(msg))
+			producer.Produce([]byte(msg))
 
 			time.Sleep(time.Millisecond * 2000)
 		}
-	}()
+	}(p)
 }
 
 func main() {

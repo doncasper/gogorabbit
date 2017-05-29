@@ -1,6 +1,10 @@
 package gogorabbit
 
-import "github.com/NeowayLabs/wabbit"
+import (
+	"fmt"
+
+	"github.com/NeowayLabs/wabbit"
+)
 
 // By default yaml reader unmarshal keys in lowercase
 // but AMQP client looks for keys in camelcase
@@ -47,12 +51,17 @@ func (o *options) Options() wabbit.Option {
 
 type ErrorSender interface {
 	SendError(error)
+	SendErrorf(string, ...interface{})
 }
 
 type errorChannel chan error
 
 func (e errorChannel) SendError(err error) {
 	e <- err
+}
+
+func (e errorChannel) SendErrorf(format string, a ...interface{}) {
+	e <- fmt.Errorf(format, a...)
 }
 
 // Delivery is an interface to delivered messages

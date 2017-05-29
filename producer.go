@@ -18,6 +18,10 @@ func (p producers) GetProducer(name string) (producer *producer, ok bool) {
 	return
 }
 
+type Producer interface {
+	Produce([]byte)
+}
+
 type producer struct {
 	options
 	errorChannel
@@ -47,7 +51,7 @@ func (p *producer) Produce(data []byte) {
 func (p *producer) worker() {
 	for message := range p.publishChannel {
 		if err := p.produce(message); err != nil {
-			p.SendError(err)
+			p.SendErrorf("Can't produce: %s", err)
 		}
 	}
 }
