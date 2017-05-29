@@ -325,6 +325,11 @@ func (mq *RabbitMQ) reconnectToRabbit(delay time.Duration) {
 	}
 }
 
+func (mq *RabbitMQ) Close() {
+	// TODO: Add graceful shutdown!
+	mq.connection.Close()
+}
+
 func increaseDelay(delay time.Duration) time.Duration {
 	return delay + delay * reconnectTimeStep / 100
 }
