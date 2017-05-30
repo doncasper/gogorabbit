@@ -26,7 +26,7 @@ type Producer interface {
 type producer struct {
 	options
 	errorChannel
-	sync.RWMutex   // Protect channel during reconnect.
+	sync.RWMutex
 	name           string
 	exchangeName   string
 	routingKey     string

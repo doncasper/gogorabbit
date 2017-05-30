@@ -78,7 +78,7 @@ func runRabbitMQ(config *viper.Viper) {
 			log.Println(">>>", msg)
 			producer.Produce([]byte(msg))
 
-			time.Sleep(time.Millisecond * 2000)
+			time.Sleep(time.Millisecond * 500)
 		}
 	}(p)
 }

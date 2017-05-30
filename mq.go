@@ -16,7 +16,7 @@ const reconnectTimeStep = 15
 type DoneChannel chan struct{}
 
 type RabbitMQ struct {
-	sync.Mutex
+	sync.RWMutex
 	exchanges
 	errorChannel
 	dsn            string
@@ -46,7 +46,9 @@ func New(dsn string, reconnectDelay time.Duration) (*RabbitMQ, error) {
 		exchanges:      make(exchanges),
 		dsn:            dsn,
 		reconnectDelay: reconnectDelay,
-		errorChannel:   make(chan error, 5),
+		errorChannel:   errorChannel{
+			channel: make(chan error, 5),
+		},
 	}
 
 	err = rabbit.connect()
@@ -149,8 +151,9 @@ func (mq *RabbitMQ) RunConsumer(config map[string]interface{}, handler ConsumerH
 		queueName:    conf.GetString("queue"),
 		handler:      handler,
 		workersCount: conf.GetInt("workers"),
-		errorChannel: mq.errorChannel,
 	}
+
+	consumer.setErrorChan(mq.getErrorChannel())
 
 	channel, err := mq.NewChannel()
 	if err != nil {
@@ -239,7 +242,9 @@ func (mq *RabbitMQ) GetProducer(name string) (producer *producer, ok bool) {
 }
 
 func (mq *RabbitMQ) Errors() chan error {
-	return mq.errorChannel
+	mq.errorChannel.setAsReaded()
+
+	return mq.errorChannel.channel
 }
 
 func (mq *RabbitMQ) connect() (err error) {
@@ -248,15 +253,19 @@ func (mq *RabbitMQ) connect() (err error) {
 	}
 
 	go func() {
-		mq.errorChannel <- fmt.Errorf(
-			"Ooops! RabbitMQ connection is closed: %s",
-			<-mq.connection.NotifyClose(make(chan wabbit.Error)),
-		)
+		mq.SendErrorf("Ooops! RabbitMQ connection is closed: %s", <-mq.connection.NotifyClose(make(chan wabbit.Error)))
 
 		mq.reconnect()
 	}()
 
 	return
+}
+
+func (mq *RabbitMQ) getErrorChannel() *errorChannel {
+	mq.Lock()
+	defer mq.Unlock()
+
+	return &mq.errorChannel
 }
 
 func (mq *RabbitMQ) reconnect() (ok bool) {
@@ -303,10 +312,7 @@ func (mq *RabbitMQ) reconnectToRabbit(delay time.Duration) {
 	var err error
 
 	if err = mq.connect(); err != nil {
-		mq.errorChannel <- fmt.Errorf(
-			"Can't reconnect to RabbitMQ: %s. Next reconnection after: %.2f sec.",
-			err, delay.Seconds(),
-		)
+		mq.SendErrorf("Can't reconnect to RabbitMQ: %s. Next reconnection after: %.2f sec.", err, delay.Seconds())
 
 		mq.reconnectToRabbit(delay)
 
@@ -314,10 +320,7 @@ func (mq *RabbitMQ) reconnectToRabbit(delay time.Duration) {
 	}
 
 	if mq.channel, err = mq.NewChannel(); err != nil {
-		mq.errorChannel <- fmt.Errorf(
-			"Can't reconnect to RabbitMQ: %s. Next reconnection after: %.2f sec.",
-			err, delay.Seconds(),
-		)
+		mq.SendErrorf("Can't reconnect to RabbitMQ: %s. Next reconnection after: %.2f sec.", err, delay.Seconds())
 
 		mq.reconnectToRabbit(delay)
 

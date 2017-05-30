@@ -61,14 +61,14 @@ rabbit := gogorabbit.MQ()
 
 ## Logging
 
+If you need log all errors from package use `Errors()` method for getting error channel.
+
 The easiest way to logging all errors it's running new goroutine which will be handle all errors:
 ```go
 rabbit, _ := gogorabbit.New(dsn, reconnectionDelay)
 
 go func() {
     for err := range rabbit.Errors() {
-        // If you do not want log errors, just live this body empty
-        // to avoid stopping the program due to error channel overflow.
         log.Println(err)
     }
 }()

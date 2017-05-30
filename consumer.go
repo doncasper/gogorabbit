@@ -2,6 +2,7 @@ package gogorabbit
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/NeowayLabs/wabbit"
 )
@@ -42,6 +43,7 @@ func (c consumers) GetConsumer(name string) (consumer *consumer, ok bool) {
 }
 
 type consumer struct {
+	sync.RWMutex
 	options
 	consumerWorkers
 	errorChannel
@@ -79,6 +81,14 @@ func (c *consumer) setChannel(channel wabbit.Channel) error {
 	c.channel = channel
 
 	return c.channel.Qos(1, 0, false)
+}
+
+func (c *consumer) setErrorChan(channel *errorChannel)  {
+	c.Lock()
+	channel.Lock()
+	c.errorChannel = *channel
+	channel.Unlock()
+	c.Unlock()
 }
 
 func (c *consumer) runWorker(worker *consumerWorker) (err error) {

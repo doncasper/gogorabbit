@@ -2,6 +2,7 @@ package gogorabbit
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/NeowayLabs/wabbit"
 )
@@ -54,14 +55,28 @@ type ErrorSender interface {
 	SendErrorf(string, ...interface{})
 }
 
-type errorChannel chan error
+type errorChannel struct {
+	sync.RWMutex
+	channel chan error
+	isRead  bool
+}
+
+func (e *errorChannel) setAsReaded() {
+	e.Lock()
+	e.isRead = true
+	e.Unlock()
+}
 
 func (e errorChannel) SendError(err error) {
-	e <- err
+	if e.isRead {
+		e.channel <- err
+	}
 }
 
 func (e errorChannel) SendErrorf(format string, a ...interface{}) {
-	e <- fmt.Errorf(format, a...)
+	if e.isRead {
+		e.channel <- fmt.Errorf(format, a...)
+	}
 }
 
 // Delivery is an interface to delivered messages
