@@ -45,7 +45,7 @@ func New(dsn string, reconnectDelay time.Duration) (*RabbitMQ, error) {
 	rabbit := &RabbitMQ{
 		exchanges:      make(exchanges),
 		dsn:            dsn,
-		reconnectDelay: reconnectDelay * time.Second,
+		reconnectDelay: reconnectDelay,
 		errorChannel:   make(chan error, 5),
 	}
 

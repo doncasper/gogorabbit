@@ -20,6 +20,7 @@ func (p producers) GetProducer(name string) (producer *producer, ok bool) {
 
 type Producer interface {
 	Produce([]byte)
+	Name() string
 }
 
 type producer struct {

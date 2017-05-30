@@ -38,7 +38,7 @@ func consumerHandler(delivery gogorabbit.Delivery, sender gogorabbit.ErrorSender
 }
 
 func runRabbitMQ(config *viper.Viper) {
-	rabbit, err := gogorabbit.New(config.GetString("dsn"), config.GetDuration("reconnect_delay"))
+	rabbit, err := gogorabbit.New(config.GetString("dsn"), config.GetDuration("reconnect_delay")*time.Second)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func runRabbitMQ(config *viper.Viper) {
 
 	go func(producer gogorabbit.Producer) {
 		for {
-			msg := fmt.Sprintf(`{"msg": "Hello!", "producer": "%s", "ts": %d}`, p.Name(), time.Now().Unix())
+			msg := fmt.Sprintf(`{"msg": "Hello!", "producer": "%s", "ts": %d}`, producer.Name(), time.Now().Unix())
 
 			log.Println(">>>", msg)
 			producer.Produce([]byte(msg))
